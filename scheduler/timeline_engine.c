@@ -196,5 +196,163 @@ BaseType_t xTimelineEngineValidate( const TimelineSpec_t *pxSpec )
                 return pdFAIL;
             }
 
-            /* Sub-frame containment: the HRT window [start, end) must lie
-             * entirely inside the sub-frame whose ID the slot declares.
+            /* Sub-frame k spans [k * sub, (k+1) * sub). End-of-window is
+             * exclusive, so an HRT that ends exactly on the sub-frame
+             * boundary is still considered "contained". */
+            {
+                uint32_t ulNumSubframes = pxSpec->ulMajorFrameTicks /
+                                          pxSpec->ulSubframeTicks;
+                uint32_t ulSubLo, ulSubHi;
+
+                if( pxS->ulSubframeId >= ulNumSubframes )
+                {
+                    return pdFAIL;
+                }
+                ulSubLo = pxS->ulSubframeId * pxSpec->ulSubframeTicks;
+                ulSubHi = ulSubLo + pxSpec->ulSubframeTicks;
+                if( pxS->ulStartOffset < ulSubLo ||
+                    pxS->ulEndOffset   > ulSubHi )
+                {
+                    return pdFAIL;
+                }
+            }
+        }
+        else
+        {
+            if( ++ulSrt > teMAX_SRT_TASKS )
+            {
+                return pdFAIL;
+            }
+        }
+    }
+
+    /* HRT windows must not overlap. */
+    for( i = 0; i < pxSpec->ulSlotCount; i++ )
+    {
+        if( pxSpec->pxSlots[ i ].eClass != HARD_RT ) continue;
+        for( j = i + 1; j < pxSpec->ulSlotCount; j++ )
+        {
+            if( pxSpec->pxSlots[ j ].eClass != HARD_RT ) continue;
+            uint32_t a0 = pxSpec->pxSlots[ i ].ulStartOffset;
+            uint32_t a1 = pxSpec->pxSlots[ i ].ulEndOffset;
+            uint32_t b0 = pxSpec->pxSlots[ j ].ulStartOffset;
+            uint32_t b1 = pxSpec->pxSlots[ j ].ulEndOffset;
+            if( a0 < b1 && b0 < a1 )
+            {
+                return pdFAIL;
+            }
+        }
+    }
+
+    return pdPASS;
+}
+
+/* =========================================================================== */
+/* Configuration & validation                                                  */
+/* =========================================================================== */
+BaseType_t vConfigureScheduler( const TimelineSpec_t *pxSpec )
+{
+    if( xTimelineEngineValidate( pxSpec ) != pdPASS )
+    {
+        vApplicationScheduleErrorHook( teERR_INVALID_SPEC, "configure" );
+        return pdFAIL;
+    }
+
+    s_xSpec = *pxSpec;
+    vTraceEnable( pxSpec->ucTraceEnabled );
+
+    if( prvBuildTables( &s_xSpec ) != pdPASS )
+    {
+        vApplicationScheduleErrorHook( teERR_TABLE_BUILD, "configure" );
+        return pdFAIL;
+    }
+
+    /* Create the tick signal and wire up the kernel hook. */
+    s_xTickSignal = xSemaphoreCreateBinary();
+    if( s_xTickSignal == NULL )
+    {
+        vApplicationScheduleErrorHook( teERR_SEMAPHORE_ALLOC, "configure" );
+        return pdFAIL;
+    }
+    vTimelineHookInit( s_xSpec.ulMajorFrameTicks, s_xTickSignal );
+
+    /* Create the engine task (highest priority). */
+    if( xTaskCreate( prvEngineTask, "TL_ENGINE",
+                     configMINIMAL_STACK_SIZE * 2, NULL,
+                     tePRIO_ENGINE, &s_xEngineTask ) != pdPASS )
+    {
+        vApplicationScheduleErrorHook( teERR_ENGINE_TASK_CREATE, "configure" );
+        return pdFAIL;
+    }
+
+    return pdPASS;
+}
+
+/* Request a spec swap: the engine adopts pxSpec at the next frame boundary.
+ * Returns pdFAIL if the new spec is invalid (current spec keeps running). */
+BaseType_t xTimelineEngineReload( const TimelineSpec_t *pxSpec )
+{
+    if( xTimelineEngineValidate( pxSpec ) != pdPASS )
+    {
+        vApplicationScheduleErrorHook( teERR_INVALID_SPEC, "reload" );
+        return pdFAIL;
+    }
+    s_pxPendingSpec = pxSpec;   /* picked up at next frame boundary */
+    return pdPASS;
+}
+
+BaseType_t xTimelineEngineStart( const TimelineSpec_t *pxSpec )
+{
+    if( vConfigureScheduler( pxSpec ) != pdPASS )
+    {
+        return pdFAIL;
+    }
+    vTaskStartScheduler();
+    return pdFAIL; /* only on fatal allocation failure */
+}
+
+/* =========================================================================== */
+/* CPU statistics accessors                                                    */
+/* =========================================================================== */
+uint32_t ulTimelineGetNonHrtTicks( void )
+{
+    return s_ulNonHrtLatched;
+}
+
+uint32_t ulTimelineGetTrueIdleTicks( void )
+{
+    /* 32-bit aligned read on Cortex-M3 is atomic. */
+    return s_ulTrueIdleCount;
+}
+
+void vTimelineIdleTickAccount( void )
+{
+    /* The FreeRTOS idle task runs in a tight loop while the CPU is idle, so
+     * vApplicationIdleHook may be invoked many thousands of times per tick.
+     * To produce a meaningful idle *ticks* count (comparable with elapsed
+     * tick counts), bump the counter at most once per tick. */
+    static TickType_t s_xLastTick = 0;
+    TickType_t xNow = xTaskGetTickCount();
+    if( xNow != s_xLastTick )
+    {
+        s_xLastTick = xNow;
+        s_ulTrueIdleCount++;
+    }
+}
+
+/* =========================================================================== */
+/* Trampolines                                                                  */
+/* =========================================================================== */
+static SlotCB_t *prvSelfCB( void )
+{
+    TaskHandle_t xSelf = xTaskGetCurrentTaskHandle();
+    uint32_t i;
+    for( i = 0; i < s_ulHrtCount; i++ )
+    {
+        if( s_xHrt[ i ].xHandle == xSelf ) return &s_xHrt[ i ];
+    }
+    for( i = 0; i < s_ulSrtCount; i++ )
+    {
+        if( s_xSrt[ i ].xHandle == xSelf ) return &s_xSrt[ i ];
+    }
+    return NULL;
