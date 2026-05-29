@@ -101,6 +101,7 @@ QEMU_FLAGS = -M lm3s6965evb -nographic \
 run: all
 	qemu-system-arm $(QEMU_FLAGS) -kernel $(TARGET)
 
+
 # Shortcut: clean rebuild in benchmark mode + run. Always cleans first because
 # BENCHMARK_MODE is a compile-time macro - reusing demo-mode object files
 # would silently produce the wrong binary.

@@ -595,31 +595,3 @@ static void prvEngineTask( void *pvArg )
     }
     
 }
-
-/* =========================================================================== */
-/* CPU statistics accessors                                                    */
-/* =========================================================================== */
-uint32_t ulTimelineGetNonHrtTicks( void )
-{
-    return s_ulNonHrtLatched;
-}
-
-uint32_t ulTimelineGetTrueIdleTicks( void )
-{
-    return s_ulTrueIdleCount;   /* aligned 32-bit read is atomic on Cortex-M3 */
-}
-
-void vTimelineIdleTickAccount( void )
-{
-    /* The FreeRTOS idle task runs in a tight loop while the CPU is idle, so
-     * vApplicationIdleHook may be invoked many thousands of times per tick.
-     * To produce a meaningful idle *ticks* count (comparable with elapsed
-     * tick counts), bump the counter at most once per tick. */
-    static TickType_t s_xLastTick = 0;
-    TickType_t xNow = xTaskGetTickCount();
-    if( xNow != s_xLastTick )
-    {
-        s_xLastTick = xNow;
-        s_ulTrueIdleCount++;
-    }
-}
