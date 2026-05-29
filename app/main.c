@@ -1,22 +1,23 @@
 #include <stdio.h>
 #include "FreeRTOS.h"
 #include "task.h"
+#include "timeline_engine.h"
 
-static void prvHello( void *pv )
-{
-    ( void ) pv;
-    for( ;; )
-    {
-        printf( "hello from FreeRTOS\n" );
-        vTaskDelay( pdMS_TO_TICKS( 1000 ) );
-    }
-}
+static void HRT_A(void *pv) { (void)pv; printf("  HRT_A ran\n"); }
 
-int main( void )
+static const TimelineSlot_t slots[] = {
+    { "HRT_A", HRT_A, NULL, HARD_RT, 10, 15, 1, 0, configMINIMAL_STACK_SIZE },
+};
+static const TimelineSpec_t spec = {
+    .ulMajorFrameTicks = 50, .ulSubframeTicks = 10,
+    .pxSlots = slots, .ulSlotCount = 1, .ucTraceEnabled = 1,
+};
+
+int main(void)
 {
-    xTaskCreate( prvHello, "HELLO", 256, NULL, 2, NULL );
-    vTaskStartScheduler();
-    for( ;; ) {}
+    printf("Engine smoke test\n");
+    xTimelineEngineStart(&spec);
+    for(;;){}
 }
 
 /* Required hooks for static allocation */
