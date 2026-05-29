@@ -356,3 +356,98 @@ static SlotCB_t *prvSelfCB( void )
         if( s_xSrt[ i ].xHandle == xSelf ) return &s_xSrt[ i ];
     }
     return NULL;
+    }
+
+void vTimelineSlotComplete( void )
+{
+    SlotCB_t *pxCB = prvSelfCB();
+    if( pxCB != NULL )
+    {
+        pxCB->ucCompleted = 1;
+    }
+}
+
+static void prvHrtTramp( void *pvArg )
+{
+    SlotCB_t *pxCB = ( SlotCB_t * ) pvArg;
+
+    pxCB->ucStarted   = 1;
+    pxCB->ucCompleted = 0;
+    vTraceLog( xTaskGetTickCount(), TRACE_START, pxCB->pxSlot->pcName, 0 );
+
+    pxCB->pxSlot->pxBody( pxCB->pxSlot->pvArg );
+
+    pxCB->ucCompleted = 1;
+    vTraceLog( xTaskGetTickCount(), TRACE_COMPLETE, pxCB->pxSlot->pcName, 0 );
+
+    /* Park; the engine cleans us up at slot end or frame reset. */
+    vTaskSuspend( NULL );
+    vTaskDelete( NULL );
+}
+
+static void prvSrtTramp( void *pvArg )
+{
+    SlotCB_t *pxCB = ( SlotCB_t * ) pvArg;
+
+    pxCB->ucStarted   = 1;
+    pxCB->ucCompleted = 0;
+    vTraceLog( xTaskGetTickCount(), TRACE_SRT_START, pxCB->pxSlot->pcName, 0 );
+
+    pxCB->pxSlot->pxBody( pxCB->pxSlot->pvArg );
+
+    pxCB->ucCompleted = 1;
+    vTraceLog( xTaskGetTickCount(), TRACE_SRT_COMPLETE, pxCB->pxSlot->pcName, 0 );
+
+    pxCB->xHandle = NULL;
+    prvReleaseNextSrt();      /* chain the next SRT in fixed order */
+    vTaskDelete( NULL );
+}
+
+/* =========================================================================== */
+/* SRT chaining                                                                 */
+/* =========================================================================== */
+static void prvReleaseNextSrt( void )
+{
+    if( s_ulSrtNext >= s_ulSrtCount )
+    {
+        return;
+    }
+
+    SlotCB_t *pxCB = &s_xSrt[ s_ulSrtNext++ ];
+    uint16_t usStack = pxCB->pxSlot->usStackWords ?
+                       pxCB->pxSlot->usStackWords : configMINIMAL_STACK_SIZE;
+
+    pxCB->ucStarted   = 0;
+    pxCB->ucCompleted = 0;
+
+    if( xTaskCreate( prvSrtTramp, pxCB->pxSlot->pcName, usStack, pxCB,
+                     tePRIO_SRT, &pxCB->xHandle ) != pdPASS )
+    {
+        pxCB->xHandle = NULL;
+        vApplicationTaskCreateFailedHook( pxCB->pxSlot->pcName, SOFT_RT );
+    }
+}
+
+/* =========================================================================== */
+/* Frame reset: destroy + recreate for deterministic replay                     */
+/* =========================================================================== */
+static void prvFrameReset( uint32_t ulNowTick )
+{
+    uint32_t i;
+
+    for( i = 0; i < s_ulHrtCount; i++ )
+    {
+        if( s_xHrt[ i ].xHandle != NULL )
+        {
+            vTaskDelete( s_xHrt[ i ].xHandle );
+            s_xHrt[ i ].xHandle = NULL;
+        }
+        s_xHrt[ i ].ucStarted   = 0;
+        s_xHrt[ i ].ucCompleted = 0;
+    }
+    for( i = 0; i < s_ulSrtCount; i++ )
+    {
+        if( s_xSrt[ i ].xHandle != NULL )
+        {
+            vTaskDelete( s_xSrt[ i ].xHandle );
+            s_xSrt[ i ].xHandle = NULL;
