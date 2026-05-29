@@ -39,6 +39,9 @@
 /* FreeRTOS includes. */
 #include "FreeRTOS.h"
 #include "task.h"
+#if ( configUSE_TIMELINE_SCHED == 1 )
+    #include "timeline_hook.h"
+#endif
 #include "timers.h"
 #include "stack_macros.h"
 
@@ -4916,6 +4919,17 @@ BaseType_t xTaskIncrementTick( void )
             }
         }
         #endif /* configUSE_TICK_HOOK */
+
+        #if ( configUSE_TIMELINE_SCHED == 1 )
+        {
+            /* Thin timeline hook: advance frame tick + signal engine.
+             * Policy lives in user space (timeline_engine.c). */
+            if( xTimelineTickHookFromISR( xTickCount ) != pdFALSE )
+            {
+                xSwitchRequired = pdTRUE;
+            }
+        }
+        #endif
 
         #if ( configUSE_PREEMPTION == 1 )
         {

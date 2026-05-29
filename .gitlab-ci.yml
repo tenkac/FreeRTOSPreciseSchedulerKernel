@@ -1,0 +1,23 @@
+stages:
+  - build
+  - test
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+
+build-and-test:
+  stage: build
+  image: ubuntu:24.04
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends \
+        gcc-arm-none-eabi make qemu-system-arm
+  script:
+    - make
+    - make tests
+    - echo "Build and test compile OK"
+  artifacts:
+    paths:
+      - build/scheduler.elf
+      - build/tests.elf
+    expire_in: 1 week
