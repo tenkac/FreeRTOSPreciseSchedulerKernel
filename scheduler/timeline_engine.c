@@ -506,3 +506,89 @@ static void prvEngineTask( void *pvArg )
                         vTaskDelete( s_xSrt[ i ].xHandle );
                         s_xSrt[ i ].xHandle = NULL;
                     }
+                    }
+                s_xSpec = *s_pxPendingSpec;
+                vTraceEnable( s_xSpec.ucTraceEnabled );
+                prvBuildTables( &s_xSpec );
+                vTimelineHookInit( s_xSpec.ulMajorFrameTicks, s_xTickSignal );
+                s_pxPendingSpec = NULL;
+                ulFrame = s_xSpec.ulMajorFrameTicks;
+            }
+
+            prvFrameReset( ( uint32_t ) xNow );
+        }
+
+        /* HRT slot management */
+        for( i = 0; i < s_ulHrtCount; i++ )
+        {
+            SlotCB_t             *pxCB = &s_xHrt[ i ];
+            const TimelineSlot_t *pxS  = pxCB->pxSlot;
+
+            if( ulOff == pxS->ulStartOffset && pxCB->xHandle == NULL &&
+                pxCB->ucStarted == 0 )
+            {
+                uint16_t usStack = pxS->usStackWords ?
+                                   pxS->usStackWords : configMINIMAL_STACK_SIZE;
+                vTraceLog( ( uint32_t ) xNow, TRACE_RELEASE, pxS->pcName,
+                           pxS->ulSubframeId );
+                if( xTaskCreate( prvHrtTramp, pxS->pcName, usStack, pxCB,
+                                 tePRIO_HRT, &pxCB->xHandle ) != pdPASS )
+                {
+                    pxCB->xHandle = NULL;
+                    vApplicationTaskCreateFailedHook( pxS->pcName, HARD_RT );
+                }
+            }
+
+            if( ulOff == pxS->ulEndOffset && pxCB->xHandle != NULL )
+            {
+                if( pxCB->ucCompleted == 0 )
+                {
+                    vTaskDelete( pxCB->xHandle );
+                    pxCB->xHandle = NULL;
+                    vTraceLog( ( uint32_t ) xNow, TRACE_DEADLINE_MISS,
+                               pxS->pcName, ( uint32_t ) xNow );
+                    vApplicationDeadlineMissHook( pxS->pcName, ( uint32_t ) xNow );
+                }
+                else
+                {
+                    vTaskDelete( pxCB->xHandle );
+                    pxCB->xHandle = NULL;
+                }
+            }
+        }
+
+        /* idle accounting + per-tick state snapshot */
+        {
+            uint8_t ucHrtOpen = 0;
+            for( i = 0; i < s_ulHrtCount; i++ )
+            {
+                const TimelineSlot_t *pxS = s_xHrt[ i ].pxSlot;
+                if( ulOff >= pxS->ulStartOffset && ulOff < pxS->ulEndOffset )
+                {
+                    ucHrtOpen = 1;
+                    break;
+                }
+            }
+            if( ucHrtOpen == 0 )
+            {
+                s_ulNonHrtTicks++;
+            }
+
+            /* Per-tick heartbeat: recorded in RAM, NOT printed live (vTraceLog
+             * deliberately drops TRACE_TICK from the live UART stream). Use
+             * vTraceDumpAll() at end-of-run to view the full tick history.   */
+            vTraceLog( ( uint32_t ) xNow, TRACE_TICK, NULL,
+                       traceTICK_PACK( ulOff, ucHrtOpen ) );
+        }
+
+        if( ulOff == ( ulFrame - 1 ) )
+        {
+            /* Latch the non-HRT count for ulTimelineGetNonHrtTicks(), then
+             * report it through the trace under its historical name. */
+            s_ulNonHrtLatched = s_ulNonHrtTicks;
+            vTraceIdleReport( ( uint32_t ) xNow, s_ulNonHrtTicks );
+        }
+
+        ulPrevOffset = ulOff;
+    }
+}
