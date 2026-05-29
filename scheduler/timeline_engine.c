@@ -451,3 +451,58 @@ static void prvFrameReset( uint32_t ulNowTick )
         {
             vTaskDelete( s_xSrt[ i ].xHandle );
             s_xSrt[ i ].xHandle = NULL;
+            }
+        s_xSrt[ i ].ucStarted   = 0;
+        s_xSrt[ i ].ucCompleted = 0;
+    }
+
+    s_ulSrtNext     = 0;
+    s_ulNonHrtTicks = 0;
+
+    vTraceLog( ulNowTick, TRACE_FRAME_START, "FRAME", 0 );
+    prvReleaseNextSrt();
+}
+
+/* =========================================================================== */
+/* Engine task: woken once per tick by the kernel hook's semaphore              */
+/* =========================================================================== */
+static void prvEngineTask( void *pvArg )
+{
+    ( void ) pvArg;
+
+    uint32_t ulPrevOffset = s_xSpec.ulMajorFrameTicks; /* force reset on entry */
+    uint32_t i;
+
+    for( ;; )
+    {
+        /* Block until the kernel hook signals a tick. <=1 tick jitter. */
+        xSemaphoreTake( s_xTickSignal, portMAX_DELAY );
+
+        /* Frame length read fresh each tick so reload can change it. */
+        uint32_t ulFrame = s_xSpec.ulMajorFrameTicks;
+
+        TickType_t xNow  = xTaskGetTickCount();
+        uint32_t   ulOff = ( uint32_t ) xTimelineGetFrameOffset();
+
+        /* frame boundary */
+        if( ulOff < ulPrevOffset )
+        {
+            /* Adopt a pending reload spec, if any, before rebuilding tables. */
+            if( s_pxPendingSpec != NULL )
+            {
+                /* tear down current tasks first */
+                for( i = 0; i < s_ulHrtCount; i++ )
+                {
+                    if( s_xHrt[ i ].xHandle != NULL )
+                    {
+                        vTaskDelete( s_xHrt[ i ].xHandle );
+                        s_xHrt[ i ].xHandle = NULL;
+                    }
+                }
+                for( i = 0; i < s_ulSrtCount; i++ )
+                {
+                    if( s_xSrt[ i ].xHandle != NULL )
+                    {
+                        vTaskDelete( s_xSrt[ i ].xHandle );
+                        s_xSrt[ i ].xHandle = NULL;
+                    }
